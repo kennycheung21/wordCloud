@@ -18,10 +18,10 @@ object WordCloudProducer {
   def main(args: Array[String]) {
 
     try {
-      val config = new WordCloudProducerConfig(args)
+      val config = new WordCloudProducerConfig(args) //Prepare producer config
 
       val reader = new URLReader
-      reader.init(getReaderProps(config))
+      reader.init(getReaderProps(config))       //Initialize file reader for URL source
 
       val producerProps = getNewProducerProps(config)
       val producer = new KafkaProducer[String,Int](producerProps)
@@ -33,11 +33,15 @@ object WordCloudProducer {
       })
 
       var recordWave: Iterator[ProducerRecord[String, Int]] = null
+      /*
+      Default async for sending message, non-blocking & multi-thread for better performance
+      Need to pay attention to ulimit of open file when scale up
+       */
       val sync = producerProps.getProperty("producer.type", "async").equals("sync")
       val topic = config.topic
 
       recordWave = reader.nextWave()
-      var wave = 0
+      var wave:Long = 0
       var total = reader.getSize()
       while (true){
         var p = 0
@@ -47,7 +51,7 @@ object WordCloudProducer {
         while (recordWave.hasNext) {
           try {
             var record = recordWave.next()
-
+            //Ensure message is delivered via callback
             var response = if (sync) producer.send(record).get() else producer.send(record,new ProducerCallback(record.topic(), record.key, record.value))
             logger.debug("Successfully sent records: " + record.toString + " with response: "+ response.toString + " Sync = " + sync.toString)
             Thread.sleep(config.sendTimeout.toLong)
@@ -61,7 +65,7 @@ object WordCloudProducer {
           }
           p += 1
           progress = p.toFloat/total.toFloat
-          if (progress >= threshold)
+          if (progress >= threshold)      //Keep track of the progress within a wave of messages
           {
             val percentage = progress*100
             logger.info(f"Progress: $percentage%3.2f%%")
@@ -78,7 +82,6 @@ object WordCloudProducer {
           logger.info("I'm gonna sleep after sending the wave #" + wave + " !")
         }
 
-        //Thread.sleep(producerProps.getProperty("sendTimeout", "2000").toLong)
         Thread.sleep(config.sendTimeout.toLong)
         recordWave = reader.nextWave()
         wave += 1
@@ -94,7 +97,7 @@ object WordCloudProducer {
     System.exit(0)
   }
 
-  def getReaderProps(config: WordCloudProducerConfig): Properties = {
+  private def getReaderProps(config: WordCloudProducerConfig): Properties = {
     val props = new Properties
     props.put("topic",config.topic)
     props.put("inputFile", config.inputFile)
@@ -102,6 +105,7 @@ object WordCloudProducer {
     props
   }
 
+  //Prepare the basic producer config
   private def producerProps(config: WordCloudProducerConfig): Properties = {
     val props =
       if (config.options.has(config.producerConfigOpt))
@@ -111,7 +115,8 @@ object WordCloudProducer {
     props
   }
 
-  def getNewProducerProps(config: WordCloudProducerConfig): Properties = {
+  //Translate to new kafka producer config
+  private def getNewProducerProps(config: WordCloudProducerConfig): Properties = {
 
     val props = producerProps(config)
 

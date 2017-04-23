@@ -1,32 +1,28 @@
 package com.Kenny.SDE.spark
 
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.kafka.common.serialization.IntegerDeserializer
+import org.apache.spark.SparkException
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.util.sketch.BloomFilter
+import org.apache.spark.streaming._
+import org.apache.spark.streaming.kafka010._
+import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
+import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
+import org.apache.spark.streaming.{Seconds, StreamingContext}
+import com.twitter.algebird._
+import com.twitter.algebird.CMSHasherImplicits._
+import java.util.Properties
+import java.util.concurrent.ConcurrentHashMap
 import java.io._
 
 import scopt.OptionParser
 
-import org.apache.spark.streaming._
-import org.apache.spark.streaming.kafka010._
-import org.apache.spark.{SparkException}
-import org.apache.spark.sql.{SparkSession}
-
-import org.apache.spark.util.sketch.BloomFilter
-
-import com.twitter.algebird._
-import com.twitter.algebird.CMSHasherImplicits._
-
-import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.kafka.common.serialization.IntegerDeserializer
-import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
-import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
-import org.apache.spark.streaming.{Seconds, StreamingContext}
-import java.util.Properties
-import java.util.concurrent.ConcurrentHashMap
-
 import scala.collection.JavaConversions._
 import scala.collection.Map
 import org.apache.log4j.LogManager
-
 import com.Kenny.SDE.util._
+import org.apache.spark.storage.StorageLevel
 
 /**
   * Created by kzhang on 4/20/17.
@@ -38,8 +34,9 @@ object WordCloud {
 
   def main(args: Array[String]) {
 
-    val defaultParams = WordCloudParams()
+    val defaultParams = WordCloudParams()  //Initialize default params
 
+    //Parse the params from spark-submit
     val parser = new OptionParser[WordCloudParams]("WordCloud") {
       head("Streaming Word Cloud: a streaming app for Amazon product description word count.")
       opt[String]('b', "batch")
@@ -48,7 +45,7 @@ object WordCloud {
         .action((x, c) => c.copy(batch = x.toInt))
       opt[String]('s', "switch")
         .required()
-        .text("0: traditional word count, 1: use CMS, 2: use Both")
+        .text("0: use traditional word count, 1: use CMS to extract top common words, 2: use Both")
         .action((x, c) => c.copy(switch = x.toInt))
       opt[String]('p', "myProperties")
         .text("the config properties file location for wordCloud")
@@ -83,13 +80,13 @@ object WordCloud {
     val propertiesFile: String = params.propertiesFile
     val checkpointPath : String = params.checkpointDir
 
-    //Process and prepare the parameters
+    //Process and prepare the parameters for kafka streaming and word cloud analysis
     val wholeConfigs = loadPropertiesFile(propertiesFile)
     val kafkaParams = prepareKafkaConfigs(wholeConfigs, batch.toInt)
     val algParams = prepareAlgConfigs(wholeConfigs)
 
     //Bloom Filter parameters
-    val wordFilter: Array[String] = algParams.getOrDefault("bf.filter", "amazon").split(",")
+    val wordFilter: Array[String] = algParams.getOrDefault("bf.filter", "amazon").split(",")  //Get the configuration to filter the non-meaningful words
     val FPP: Double = algParams.getOrDefault("bf.fpp", "0.03").toDouble
     val EXPNUM: Long = algParams.getOrDefault("bf.expnum", "1000").toLong
 
@@ -100,6 +97,7 @@ object WordCloud {
     val SEED: Int = algParams.getOrDefault("cms.seed", "1").toInt
     val PERC: Double = algParams.getOrDefault("cms.perc", "0.001").toDouble
 
+    //Verbose
     if (wholeConfigs.getOrDefault("verbose", "false") == "true" )
     {
       println(s"Logger Class: ${logger.getClass.getName}. Logger lever: ${logger.getEffectiveLevel}")
@@ -112,25 +110,28 @@ object WordCloud {
 
     val spark = SparkSession.builder().appName("KennyWordCloud").enableHiveSupport().getOrCreate()
 
+    //Broadcast the word filter for non-meaningful words
     val bWordFilter = spark.sparkContext.broadcast(wordFilter)
 
     import spark.implicits._
 
+    //Callback for async commit
     val cb = new SparkCallback()
 
     val ssc = new StreamingContext(spark.sparkContext, Seconds(batch.toLong))
     ssc.checkpoint(checkpointPath)
 
-    val initialRDD = ssc.sparkContext.parallelize(List(("amazon", 1L)))
+    val initialRDD = ssc.sparkContext.parallelize(List(("amazon", 1L))) //Initial RDD for word count
 
-    val initialFilter = spark.createDataset(List("http://www.amazon.com/"))
+    val initialFilter = spark.createDataset(List("http://www.amazon.com/")) //Initial bloom filter
 
-    val masterBF : BloomFilter = initialFilter.stat.bloomFilter("value", EXPNUM, FPP)
-    logger.info(s"Initial bloom filter bit size: ${masterBF.bitSize()}")
+    val masterBF : BloomFilter = initialFilter.stat.bloomFilter("value", EXPNUM, FPP)     //Master bloom filter to keep track of processed URLs
+    logger.debug(s"Initial bloom filter bit size: ${masterBF.bitSize()}")
     val topicsSet = topics.split(",").toSet
+    //Create direct kafka stream
     val kafkaStream = KafkaUtils.createDirectStream[String, Int](ssc, PreferConsistent, Subscribe[String,Int](topicsSet, kafkaParams))
 
-    //consumerRecords => URLs
+    //consumerRecords => URLs, after transform and materialized, commit the offsets back to kafka
     val urlStream = kafkaStream.transform { rdd =>
       var offsetRanges = Array[OffsetRange]()
       offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
@@ -143,7 +144,7 @@ object WordCloud {
       urls
     }
 
-    //Transform ONLY
+    //Transform ONLY, web scraper to extract product description for each URL
     val descPairStream = urlStream.transform{rdd =>
 
       val newURL = rdd.distinct().filter(u => !masterBF.mightContain(u))
@@ -154,7 +155,7 @@ object WordCloud {
       urlDesc
     }.filter(_.isDefined).collect{
       case Some(result) => {
-        logger.info(s"extract the top words: ${result} as rdd ${rdd.id}")
+        logger.debug(s"extract the top words: ${result} as rdd ${rdd.id}")
         result
       }
     }
@@ -162,12 +163,13 @@ object WordCloud {
       descPair
     }
 
-    descPairStream.cache() //save before the switch for future reuse
+    descPairStream.persist(StorageLevel.MEMORY_AND_DISK) //save before the switch for future reuse
 
-    //traditional word count
+    //traditional word count and save the whole word cloud into hive
     if (switch%2 == 0){
       val wordCountStream = descPairStream.map(_._2).flatMap(_.split(" ")).map{ a:String => (a, 1)}
 
+      //Mapping func for stateful word count
       def mappingFunc (word: String, count: Option[Int], state: State[Long]):Option[(String, Long)] = {
         val sum = count.getOrElse(0).toLong + state.getOption.getOrElse(0L)
         val output = (word, sum)
@@ -175,33 +177,35 @@ object WordCloud {
         Some(output)
       }
 
-      val stateDStream = wordCountStream.mapWithState(StateSpec.function(mappingFunc _).initialState(initialRDD)) //optinally set the timeout for spark to forget the idle words after some time
+      val stateWCStream = wordCountStream.mapWithState(StateSpec.function(mappingFunc _).initialState(initialRDD)) //optinally set the timeout for spark to forget the idle words after some time
 
-      val stateSnapshotStream = stateDStream.stateSnapshots()
+      //The latest state snapshot of the <word, count> pairs
+      val stateSnapshotStream = stateWCStream.stateSnapshots()
 
+      //Sorted before save into hive table with parquet for future query performance in downstream
       val topWordState = stateSnapshotStream.transform{rdd =>
         val topWordCount = rdd.sortBy(_._2, false)
         topWordCount
       }
 
-      topWordState.print(topK) //13
+      topWordState.print(topK) //For demo purpose
 
       topWordState.foreachRDD{ rdd =>
         val topWordCountDF = rdd.toDF("Words", "Count")
-        //topWordCountDF.printSchema()
+        //Overwrite
         topWordCountDF.write.mode("overwrite").saveAsTable("wordCloud")
-      }
-
-      descPairStream.map(_._1).foreachRDD{ validURL =>
-        val count = validURL.count
-        val tempBF = validURL.toDS().stat.bloomFilter("value", 1000, 0.03)
-        masterBF.mergeInPlace(tempBF)
-        logger.info(s"After Merged bloom filter, with ${count} valid url.")
       }
     }
 
+    //Safely merge the bloomfilter after confirm the url is valid with product description available
+    descPairStream.map(_._1).foreachRDD{ validURL =>
+      val count = validURL.count
+      val tempBF = validURL.toDS().stat.bloomFilter("value", 1000, 0.03)
+      masterBF.mergeInPlace(tempBF)
+      logger.info(s"After Merged bloom filter, with ${count} valid url.")
+    }
 
-    //TopK words
+    //TopK words using CMS
     if (switch > 0){
       implicit val monoid = TopPctCMS.monoid[String](eps = EPS, delta = DELTA, seed = SEED, heavyHittersPct = PERC)
 
@@ -209,25 +213,26 @@ object WordCloud {
 
       val initialCMSRDD = ssc.sparkContext.parallelize(List(("wordCloud", monoid.create(initialDesc))))
 
+      //Mapping function to merge CMS state
       val CMSMapppingFunc = (key: String, newData: Option[TopCMS[String]], state: State[TopCMS[String]]) => {
         val sum = state.get() ++ newData.getOrElse(monoid.create("amazon"))
         val output = (key, sum)
         state.update(sum)
         output
       }
-
+      //Create monoid stream
       val monoidStream = descPairStream.map(_._2).map(d => d.split(" ").toSeq).map{s => ("wordCloud", monoid.create(s))}
-
-      val stateStream = monoidStream.mapWithState(StateSpec.function(CMSMapppingFunc).initialState(initialCMSRDD))
-
-      stateStream.stateSnapshots.foreachRDD{ rdd =>
+      //state stream
+      val stateMStream = monoidStream.mapWithState(StateSpec.function(CMSMapppingFunc).initialState(initialCMSRDD))
+      //Take a snapshot and extract the top words from CMS heavyHitter
+      stateMStream.stateSnapshots.foreachRDD{ rdd =>
         val size = rdd.count()
 
         if (size > 0) {
           val m = rdd.first()._2
 
           val tk = m.heavyHitters.map{ id => (id, m.frequency(id).estimate)}.toList.sortBy { case (_, count) => -count }.slice(0, topK)
-          logger.info(s"Batch end with TopK elements: \n${tk.mkString("\n")}")
+          logger.debug(s"Batch end with TopK elements: \n${tk.mkString("\n")}")
 
           val df = rdd.map(_._2).flatMap{ m =>
             val tk = m.heavyHitters.map{ id => (id, m.frequency(id).estimate)}.toList.sortBy { case (_, count) => -count }.slice(0, topK)

@@ -21,7 +21,7 @@ case class AmazonProduct(url: String) extends Serializable {
   def productDescription(): Option[(String, String)] = {
     val startTime = System.currentTimeMillis()
     var retry: Int = 0
-
+    //Retry mechanism: Retry 3 times in case of temporary web content unavailable
     while (retry < 4){
 
       val result = doc >?> element("#productDescription p").map(_.text)
@@ -50,6 +50,7 @@ case class AmazonProduct(url: String) extends Serializable {
     return None
   }
 
+  //Extract meaningful words based on provided filter
   def extractTopWord(filter: Array[String]): Option[(String, String)] = {
     val input = productDescription()
     val punctReg = "[\\p{Punct}\\s]+"

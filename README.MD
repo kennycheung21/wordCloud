@@ -14,7 +14,7 @@
 - Zeppelin 0.6
 - SBT
 
-## Design 
+## Design/Tradeoffs
 
 This solution are divided into the following.
 
@@ -25,12 +25,15 @@ This solution are divided into the following.
 - The ProducerRecord can be send in either sync or async with callback function to ensure delivery.
 
 ### Spark Streaming
-- Spark Streaming job to consume the URLs from Kafka cluster and process the URLs to extract the top common words from those web pages.
-- Use dynamic resource allocation for easy accommodate when kafka cluster scale up.
-- Use checkpoint to ensure streaming application can be recover from failure.
-- Use spark bloom filter to ensure no duplicated URL processed, also use feedback system to ensure no URL will be mis-filter or neglect. 
+- Spark stateful streaming job to consume the URLs from Kafka cluster and process the URLs to extract the top common words from those web pages.
+- Use dynamic resource allocation and direct approach for easy accommodate when kafka cluster scale up.
+- Use kafka again to commit and store message offset to ensure message processed exactly once.
+- Use checkpoint to ensure streaming application can be recovered from failure.
+- Use spark bloom filter to ensure no duplicated URL processed, also provide feedback to master bloom filter to ensure only filter the valid URLs with product description available after being processed. 
 - Use optional switch to store the whole word cloud or just the most common words (topK) or both in hive.
 - Use Count-min sketch to estimate the top Kth words.
+- Save result to Hive table(s) for future use.
+- Expose streaming, analysis parameters in wordCloud-defaults.conf. Please refer to `conf/` folder for reference. 
 
 ### Zeppelin visualization
 - Use Zeppelin notebook to query and visualize the word cloud.
