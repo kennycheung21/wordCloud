@@ -31,7 +31,7 @@ import com.Kenny.SDE.util._
 /**
   * Created by kzhang on 4/20/17.
   */
-object wordCloud {
+object WordCloud {
   private val logger = LogManager.getLogger(getClass)
 
   val DEFAULT_PROPERTIES_FILE = "conf/wordCloud-defaults.conf"
@@ -220,7 +220,7 @@ object wordCloud {
 
       val stateStream = monoidStream.mapWithState(StateSpec.function(CMSMapppingFunc).initialState(initialCMSRDD))
 
-      stateStream.foreachRDD{ rdd =>
+      stateStream.stateSnapshots.foreachRDD{ rdd =>
         val size = rdd.count()
 
         if (size > 0) {
@@ -236,7 +236,7 @@ object wordCloud {
 
           df.write.mode("overwrite").saveAsTable("topKWords")
         }
-        logger.info(s"Batch really End with no element.")
+        logger.info(s"Batch really End with no new top-words.")
       }
     }
 

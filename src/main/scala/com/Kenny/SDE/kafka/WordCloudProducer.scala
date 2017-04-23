@@ -10,7 +10,9 @@ import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, Produce
 import org.apache.kafka.common.utils.Utils
 import org.apache.log4j.Logger
 
-object wordCloudProducer {
+import com.Kenny.SDE.util.{WordCloudProducerConfig,URLReader, ProducerCallback}
+
+object WordCloudProducer {
   private val logger = Logger.getLogger(getClass)
 
   def main(args: Array[String]) {

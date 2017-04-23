@@ -41,15 +41,21 @@ class URLReader {
     Reading the url string from file and transform it as producerRecord
     */
     logger.info("Reading URL from file: " + input)
-    Source.fromFile(input).getLines().map((key :String) => {
+    val file = Source.fromFile(input)
+    val result = file.getLines().map((key :String) => {
       val value: Int = 0 //dummy value for future usage
       new ProducerRecord [String, Int] (topic, key, value)
     })
+    file.close()
+    result
   }
 
   def getSize(): Int = {
     logger.debug("Calculating the size of file: " + input)
-    Source.fromFile(input).getLines().size
+    val file = Source.fromFile(input)
+    val size = file.getLines().size
+    file.close()
+    size
   }
 
   def close() {}
